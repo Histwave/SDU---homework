@@ -231,8 +231,219 @@ inline __m128i T_gfni(__m128i x) {
 ## 七、实验结果
 - 实验结果如project1-a结果.png所示，明文：01 23 45 67 89 ab cd ef fe dc ba 98 76 54 32 10、密钥：01 23 45 67 89 ab cd ef fe dc ba 98 76 54 32 10。密文68 1e df 34 d2 06 96 5e 86 b3 e9 4f 53 6e 42 46正确。
 - T-table优化加速了三倍以上，但内存访问开销增大；AES-NI优化显著减小了内存访问开销；GFNI优化在速度和内存访问开销上都提升很多。
-# Project1-b SM4-GCM工作模式的软件优化实现
-## 引言
 
-## 优化原理与介绍
+  
+# Project1-b SM4-GCM工作模式的软件优化实现
+## 一、引言
+Galois/Counter Mode (GCM)是一种提供认证加密的工作模式，结合了计数器模式(CTR)加密和Galois消息认证码(GMAC)。其主要优势在于：
+
+-   并行处理能力
+    
+-   高效认证机制
+    
+-   可选的附加认证数据(AAD)支持
+## 二、GCM实现过程
+#### 步骤1: 初始化
+```cpp
+// 初始化T表（S盒+线性变换预计算）
+InitializeTTable();
+
+// 密钥扩展（生成32轮密钥）
+uint32_t round_keys[32];
+ExpandKey(kMasterKey, round_keys);
+```
+#### 步骤2: 计算认证密钥H
+```cpp
+// 加密全零块获取H
+uint8_t zero_block[16] = {0};
+uint8_t H_block[16];
+EncryptBlock(zero_block, H_block, round_keys);
+
+// 转换为128位整数
+UInt128 H = {0, 0};
+for (int i = 0; i < 8; i++) H.high = (H.high << 8) | H_block[i];
+for (int i = 0; i < 8; i++) H.low = (H.low << 8) | H_block[8 + i];
+```
+#### 步骤3: 生成初始计数器J0
+```cpp
+vector<uint8_t> counter(16, 0);
+if (iv.size() == 12) {
+    // 标准IV处理: IV || 0x00000001
+    memcpy(counter.data(), iv.data(), 12);
+    counter[15] = 1;
+} else {
+    // 非标准IV: GHASH(H, IV)
+    UInt128 hash_result = ComputeGHASH(H, iv);
+    // 转换为字节序列
+    for (int i = 0; i < 8; i++) 
+        counter[i] = (hash_result.high >> (56 - 8 * i)) & 0xFF;
+    for (int i = 0; i < 8; i++) 
+        counter[8 + i] = (hash_result.low >> (56 - 8 * i)) & 0xFF;
+}
+```
+#### 步骤4: CTR模式加密
+```cpp
+ciphertext.resize(plaintext.size());
+uint8_t current_counter[16];
+memcpy(current_counter, counter.data(), 16);
+IncrementCounter(current_counter);  // J0 + 1
+
+for (size_t offset = 0; offset < data_size; offset += 16) {
+    // 生成密钥流
+    uint8_t keystream[16];
+    EncryptBlock(current_counter, keystream, round_keys);
+    
+    // 加密当前块
+    size_t block_size = min(static_cast<size_t>(16), data_size - offset);
+    for (size_t i = 0; i < block_size; i++) {
+        ciphertext[offset + i] = plaintext[offset + i] ^ keystream[i];
+    }
+    
+    // 更新计数器
+    IncrementCounter(current_counter);
+}
+```
+#### 步骤5: 计算认证标签
+```cpp
+// 构建认证数据: 密文 || 长度信息
+vector<uint8_t> auth_data = ciphertext;
+
+// 填充到16字节边界
+if (auth_data.size() % 16 != 0) {
+    auth_data.resize(auth_data.size() + (16 - auth_data.size() % 16), 0);
+}
+
+// 添加长度域 (64位0 + 64位密文长度)
+uint64_t ciphertext_bits = static_cast<uint64_t>(ciphertext.size()) * 8;
+for (int i = 0; i < 8; i++) auth_data.push_back(0);
+for (int i = 0; i < 8; i++) {
+    auth_data.push_back(static_cast<uint8_t>(ciphertext_bits >> (56 - 8 * i)));
+}
+
+// 计算GHASH
+UInt128 ghash_result = ComputeGHASH(H, auth_data);
+
+// 加密初始计数器
+uint8_t encrypted_counter[16];
+EncryptBlock(counter.data(), encrypted_counter, round_keys);
+
+// 生成认证标签
+for (int i = 0; i < 16; i++) {
+    if (i < 8) {
+        auth_tag[i] = encrypted_counter[i] ^ 
+                     ((ghash_result.high >> (56 - 8 * i)) & 0xFF);
+    } else {
+        auth_tag[i] = encrypted_counter[i] ^ 
+                     ((ghash_result.low >> (120 - 8 * i)) & 0xFF);
+    }
+}
+```
+## 三、优化原理与过程
+### 1. SM4算法优化
+
+#### (1) T表预计算
+```cpp
+void InitializeTTable() {
+    for (int i = 0; i < 256; i++) {
+        uint32_t sbox_output = kSbox[i];
+        uint32_t expanded = (sbox_output << 24) | 
+                            (sbox_output << 16) | 
+                            (sbox_output << 8) | 
+                            sbox_output;
+        kTTable[i] = LinearTransform(expanded);
+    }
+}
+```
+-   **优化效果**：将S盒查找和线性变换合并为单次查表操作
+    
+-   **性能提升**：减少每轮加密的32次查表和位运算
+
+#### (2) 轮函数循环展开
+```cpp
+for (int round = 0; round < 32; round += 4) {
+    // 处理4轮加密（展开结构）
+    tmp = state[1] ^ state[2] ^ state[3] ^ round_keys[round];
+    next = state[0] ^ kTTable[(tmp >> 24) & 0xFF] ^ ...;
+    // 状态更新...
+    
+    // 重复3次（共4轮）
+}
+```
+-   **优化效果**：减少循环控制开销
+    
+-   **性能提升**：循环次数从32次减少到8次（每次处理4轮）
+
+#### (3) 密钥扩展优化
+```cpp
+for (int round = 0; round < 32; round += 4) {
+    for (int sub_round = 0; sub_round < 4; sub_round++) {
+        // 批量处理4个轮密钥
+        uint32_t tmp = key_state[round + sub_round + 1] ^ ...;
+        // 生成轮密钥...
+    }
+}
+```
+-   **优化效果**：减少密钥生成循环分支
+    
+-   **性能提升**：利用CPU流水线提高指令级并行度
+
+### 2. GCM模式优化
+
+#### (1) GF(2^128)乘法优化
+```cpp
+UInt128 GF128Multiply(const UInt128& X, const UInt128& Y) {
+    UInt128 Z = {0, 0};
+    UInt128 V = X;  // 被乘数
+
+    for (int i = 0; i < 128; i++) {
+        // 获取乘数当前位
+        uint8_t bit = (i < 64) ? 
+            ((Y.high >> (63 - i)) & 1) : 
+            ((Y.low >> (127 - i)) & 1);
+        
+        // 条件异或
+        if (bit) {
+            Z.high ^= V.high;
+            Z.low ^= V.low;
+        }
+        
+        // 检测进位和移位
+        bool carry = V.low & 1;
+        V.low = (V.low >> 1) | (V.high << 63);
+        V.high = V.high >> 1;
+        
+        // 模约简
+        if (carry) {
+            V.high ^= 0xE100000000000000ULL;
+        }
+    }
+    return Z;
+}
+```
+-   **优化效果**：使用位并行算法避免分支预测失败
+    
+-   **性能提升**：减少条件分支，利用CPU位操作指令
+#### (2) GHASH统一处理
+```cpp
+UInt128 ComputeGHASH(const UInt128& H, const vector<uint8_t>& data) {
+    // 处理完整块...
+    for (size_t i = 0; i < full_blocks; i++) {
+        // 构建块并更新GHASH
+    }
+    
+    // 统一处理部分块
+    if (remaining_bytes) {
+        // 填充部分块到128位
+        UInt128 last_block = {0, 0};
+        // 填充并更新GHASH
+    }
+}
+```
+-   **优化效果**：消除部分块处理的特殊逻辑
+    
+-   **性能提升**：减少边界检查开销
+
+## 四、实验结果 
+实验结果由project1-b结果.png所示，可知优化后GCM所需的时间大概为0.3ms，而未优化的时间大概为0.8ms，性能提升约为59%。
+
 
