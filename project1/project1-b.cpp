@@ -8,7 +8,7 @@
 #include <windows.h>
 using namespace std;
 
-// SM4常量定义 ============================================================
+// SM4常量定义 
 
 // SM4标准S盒
 static const uint8_t kSbox[256] = {
@@ -53,7 +53,7 @@ static const uint32_t kCK[32] = {
     0x10171e25,0x2c333a41,0x484f565d,0x646b7279
 };
 
-// 核心算法组件 ============================================================
+// 核心算法组件 
 
 // 循环左移函数
 static inline constexpr uint32_t RotateLeft(uint32_t value, int shift) {
@@ -212,7 +212,7 @@ void EncryptBlock(const uint8_t input[16], uint8_t output[16], const uint32_t ro
     output[15] = state[0] & 0xFF;
 }
 
-// GCM模式组件 =============================================================
+// GCM模式组件 
 
 // 128位整数结构 (高位在前)
 struct UInt128 {
@@ -310,7 +310,7 @@ void IncrementCounter(uint8_t counter[16]) {
     *counter_ptr = _byteswap_ulong(_byteswap_ulong(*counter_ptr) + 1);
 }
 
-// GCM模式加密 =============================================================
+// GCM模式加密 
 
 void SM4_GCM_Encrypt(
     const uint32_t round_keys[32],    // 扩展后的轮密钥
@@ -405,7 +405,7 @@ void SM4_GCM_Encrypt(
     }
 }
 
-// 主函数 =================================================================
+// 主函数 
 
 int main() {
     // 初始化算法组件
@@ -448,4 +448,5 @@ int main() {
     cout << dec << endl;  // 切回十进制输出
 
     return 0;
+
 }
