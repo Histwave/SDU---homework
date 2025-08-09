@@ -346,3 +346,167 @@ d = (s2 - h1/s1) / (r1/s1 - r2 - s2) mod n
 2.  使用确定性签名方案(RFC 6979)
     
 3.  为不同系统使用独立的随机数生成源
+
+
+
+# Project5-c 伪造中本聪的数字签名
+## 一、实验背景
+中本聪在比特币系统中所设计的数字签名机制，是保障交易安全与去中心化信任的核心技术之一，其底层依赖椭圆曲线加密算法（ECDSA，具体采用 secp256k1 曲线，而非传统的 RSA 等算法，这一选择兼顾了安全性与计算效率。
+### 特点
+
+-   **非对称加密**：私钥签名，公钥验证，无需暴露私钥即可完成身份确认。
+-   **不可伪造性**：在计算上无法通过公钥或交易信息伪造出有效的私钥签名。
+-   **与交易绑定**：签名直接关联具体交易内容，一旦交易被修改，签名立即失效。
+
+## 二、实验原理
+ECDSA签名伪造的核心漏洞在于**随机数k的重用**。当同一个私钥使用相同的k值对两个不同消息进行签名时，攻击者可以通过数学推导恢复私钥：
+
+1.  **签名过程**：
+    
+    -   签名1：s₁ = k⁻¹(e₁ + d·r) mod n
+        
+    -   签名2：s₂ = k⁻¹(e₂ + d·r) mod n  
+        （其中e是消息哈希，d是私钥，r是临时公钥的x坐标）
+        
+2.  **推导过程**：
+    
+    -   (s₁ - s₂) = k⁻¹(e₁ - e₂) mod n
+        
+    -   k = (e₁ - e₂)(s₁ - s₂)⁻¹ mod n
+        
+    -   d = (s₁·k - e₁)r⁻¹ mod n
+        
+3.  **伪造签名**：
+    
+    -   使用恢复的私钥d和k值，可对任意消息生成有效签名
+## 三、实现具体过程
+#### 1. 椭圆曲线运算类
+```python
+class EllipticCurve:
+    def __init__(self, p, a, b):
+        self.p = p  # 素数域
+        self.a = a  # 曲线参数a
+        self.b = b  # 曲线参数b
+    
+    def point_addition(self, P, Q):
+        # 处理无穷远点
+        if P == "O": return Q
+        if Q == "O": return P
+        
+        x1, y1 = P
+        x2, y2 = Q
+        
+        # 点加倍(P=Q)
+        if P == Q:
+            if y1 == 0: return "O"  # 无穷远点
+            lam = (3*x1*x1 + self.a) * self.modular_inverse(2*y1)
+        
+        # 点相加(P≠Q)
+        else:
+            if x1 == x2: return "O"  # 垂直切线
+            lam = (y2 - y1) * self.modular_inverse(x2 - x1)
+        
+        lam %= self.p
+        x3 = (lam*lam - x1 - x2) % self.p
+        y3 = (lam*(x1 - x3) - y1) % self.p
+        return (x3, y3)
+    
+    def scalar_multiplication(self, k, point):
+        # 快速倍点算法
+        result = "O"
+        current = point
+        while k:
+            if k & 1:
+                result = self.point_addition(result, current)
+            current = self.point_addition(current, current)
+            k >>= 1
+        return result
+    
+    def modular_inverse(self, a):
+        # 费马小定理求模逆
+        return pow(a, self.p-2, self.p)
+```
+#### 2. ECDSA签名类
+```python
+class ECDSA:
+    def __init__(self, curve, n, G):
+        self.curve = curve  # 椭圆曲线对象
+        self.n = n          # 基点阶数
+        self.G = G          # 基点
+    
+    def sign(self, d, k, message):
+        # 生成签名
+        R = self.curve.scalar_multiplication(k, self.G)
+        r = R[0] % self.n
+        e = self.hash_message(message)
+        s = (self.modular_inverse(k) * (e + d * r)) % self.n
+        return (r, s)
+    
+    def verify(self, pub_key, message, signature):
+        # 验证签名
+        r, s = signature
+        e = self.hash_message(message)
+        w = self.modular_inverse(s)
+        u1 = (e * w) % self.n
+        u2 = (r * w) % self.n
+        
+        # 计算验证点
+        P1 = self.curve.scalar_multiplication(u1, self.G)
+        P2 = self.curve.scalar_multiplication(u2, pub_key)
+        P = self.curve.point_addition(P1, P2)
+        
+        return P != "O" and P[0] % self.n == r
+    
+    def hash_message(self, message):
+        # SHA256哈希计算
+        return int.from_bytes(hashlib.sha256(message.encode()).digest(), 'big') % self.n
+    
+    def modular_inverse(self, a):
+        # 阶n下的模逆
+        return pow(a, self.n-2, self.n)
+```
+
+#### 3. 签名伪造演示
+```python
+def forge_satoshi_signature():
+    # 比特币secp256k1曲线参数
+    p = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+    a, b = 0, 7
+    n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+    G = (0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798, 
+         0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8)
+    
+    # 创建曲线和ECDSA实例
+    curve = EllipticCurve(p, a, b)
+    ecdsa = ECDSA(curve, n, G)
+    
+    # 中本聪的私钥和重复使用的k
+    satoshi_d = 0x18E14A7B6A307F426A94F8114701E7C8E774E7F9A47E2C2035DB29A206321725
+    k = 0x3A780
+    
+    # 生成两个真实签名
+    msg1 = "无论沧桑岁月长 哪怕海角与天涯"
+    msg2 = "魂牵梦萦的眷恋 我的山大我的家"
+    sig1 = ecdsa.sign(satoshi_d, k, msg1)
+    sig2 = ecdsa.sign(satoshi_d, k, msg2)
+    
+    # 从签名恢复私钥
+    r1, s1 = sig1
+    r2, s2 = sig2
+    e1 = ecdsa.hash_message(msg1)
+    e2 = ecdsa.hash_message(msg2)
+    
+    # 计算恢复的k和私钥
+    k_recovered = ((e1 - e2) * pow(s1 - s2, n-2, n)) % n
+    d_recovered = ((s1 * k_recovered - e1) * pow(r1, n-2, n)) % n
+    
+    # 使用恢复的私钥伪造新签名
+    forged_msg = "那是我的家 朴实又美丽"
+    forged_sig = ecdsa.sign(d_recovered, k_recovered, forged_msg)
+    
+    # 验证伪造的签名
+    satoshi_pub = curve.scalar_multiplication(satoshi_d, G)
+    is_valid = ecdsa.verify(satoshi_pub, forged_msg, forged_sig)
+```
+## 四、实验结果
+如图project5-c 结果所示，伪造中本聪的数字签名成果。
