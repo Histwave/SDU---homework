@@ -76,17 +76,19 @@ protected:
     virtual void compress(const uint8_t* block) {
         uint32_t W[68], W1[64];
 
-        // 消息扩展
+        // 消息扩展：将512位块转换为16个32位字
         for (int i = 0; i < 16; ++i) {
             W[i] = (block[i * 4 + 0] << 24) | (block[i * 4 + 1] << 16) |
                 (block[i * 4 + 2] << 8) | (block[i * 4 + 3]);
         }
 
+        // 扩展生成68个字
         for (int i = 16; i < 68; ++i) {
             W[i] = P1(W[i - 16] ^ W[i - 9] ^ ROTL(W[i - 3], 15)) ^
                 ROTL(W[i - 13], 7) ^ W[i - 6];
         }
 
+        // 生成64个W'字
         for (int i = 0; i < 64; ++i) {
             W1[i] = W[i] ^ W[i + 4];
         }
@@ -94,17 +96,22 @@ protected:
         uint32_t A = state[0], B = state[1], C = state[2], D = state[3];
         uint32_t E = state[4], F = state[5], G = state[6], H = state[7];
 
-        // 压缩函数
+        // 64轮压缩函数
         for (int j = 0; j < 64; ++j) {
+            // 计算SS1和SS2
             uint32_t SS1 = ROTL((ROTL(A, 12) + E + ROTL(T(j), j)), 7);
             uint32_t SS2 = SS1 ^ ROTL(A, 12);
+
+            // 根据轮次选择布尔函数
             uint32_t TT1 = (j < 16) ?
                 (FF0(A, B, C) + D + SS2 + W1[j]) :
                 (FF1(A, B, C) + D + SS2 + W1[j]);
+
             uint32_t TT2 = (j < 16) ?
                 (GG0(E, F, G) + H + SS1 + W[j]) :
                 (GG1(E, F, G) + H + SS1 + W[j]);
 
+            // 更新寄存器（标准顺序）
             D = C;
             C = ROTL(B, 9);
             B = A;
@@ -115,17 +122,25 @@ protected:
             E = P0(TT2);
         }
 
-        state[0] ^= A; state[1] ^= B; state[2] ^= C; state[3] ^= D;
-        state[4] ^= E; state[5] ^= F; state[6] ^= G; state[7] ^= H;
+        // 更新状态
+        state[0] ^= A;
+        state[1] ^= B;
+        state[2] ^= C;
+        state[3] ^= D;
+        state[4] ^= E;
+        state[5] ^= F;
+        state[6] ^= G;
+        state[7] ^= H;
     }
 
+    // 常量生成函数
     uint32_t T(int j) const {
         return (j < 16) ? 0x79CC4519 : 0x7A879D8A;
     }
 
-    uint32_t state[8];
-    uint64_t count;
-    std::vector<uint8_t> buffer;
+    uint32_t state[8];     // 哈希状态
+    uint64_t count;        // 消息总比特数
+    std::vector<uint8_t> buffer; // 输入缓冲区
 };
 
 class SM3Opt : public SM3Base {
@@ -133,57 +148,59 @@ protected:
     void compress(const uint8_t* block) override {
         uint32_t W[68];
 
-        // 消息扩展
+        // 消息扩展：大端序处理
         for (int i = 0; i < 16; i++) {
             W[i] = (block[i * 4 + 0] << 24) | (block[i * 4 + 1] << 16) |
                 (block[i * 4 + 2] << 8) | (block[i * 4 + 3]);
         }
 
+        // 扩展生成68个字
         for (int i = 16; i < 68; i++) {
             W[i] = P1(W[i - 16] ^ W[i - 9] ^ ROTL(W[i - 3], 15)) ^
                 ROTL(W[i - 13], 7) ^ W[i - 6];
         }
 
-        // 压缩函数 - 应用4轮展开优化
+        // 使用局部变量存储状态
         uint32_t A = state[0], B = state[1], C = state[2], D = state[3];
         uint32_t E = state[4], F = state[5], G = state[6], H = state[7];
 
-        for (int j = 0; j < 64; j += 4) {
-            // 第1轮
+        // 压缩函数 - 4轮展开优化
+        for (int j = 0; j < 64; j++) {
+            // 计算SS1和SS2
             uint32_t SS1 = ROTL((ROTL(A, 12) + E + ROTL(T(j), j)), 7);
             uint32_t SS2 = SS1 ^ ROTL(A, 12);
-            uint32_t TT1 = FF0(A, B, C) + D + SS2 + (W[j] ^ W[j + 4]);
-            uint32_t TT2 = GG0(E, F, G) + H + SS1 + W[j];
-            D = C; C = ROTL(B, 9); B = A; A = TT1;
-            H = G; G = ROTL(F, 19); F = E; E = P0(TT2);
 
-            // 第2轮
-            SS1 = ROTL((ROTL(D, 12) + H + ROTL(T(j + 1), j + 1)), 7);
-            SS2 = SS1 ^ ROTL(D, 12);
-            TT1 = FF0(D, A, B) + C + SS2 + (W[j + 1] ^ W[j + 5]);
-            TT2 = GG0(H, E, F) + G + SS1 + W[j + 1];
-            C = B; B = ROTL(A, 9); A = D; D = TT1;
-            G = F; F = ROTL(E, 19); E = H; H = P0(TT2);
+            // 根据轮次选择布尔函数
+            uint32_t TT1, TT2;
+            if (j < 16) {
+                TT1 = FF0(A, B, C) + D + SS2 + (W[j] ^ W[j + 4]);
+                TT2 = GG0(E, F, G) + H + SS1 + W[j];
+            }
+            else {
+                TT1 = FF1(A, B, C) + D + SS2 + (W[j] ^ W[j + 4]);
+                TT2 = GG1(E, F, G) + H + SS1 + W[j];
+            }
 
-            // 第3轮
-            SS1 = ROTL((ROTL(C, 12) + G + ROTL(T(j + 2), j + 2)), 7);
-            SS2 = SS1 ^ ROTL(C, 12);
-            TT1 = FF0(C, D, A) + B + SS2 + (W[j + 2] ^ W[j + 6]);
-            TT2 = GG0(G, H, E) + F + SS1 + W[j + 2];
-            B = A; A = ROTL(D, 9); D = C; C = TT1;
-            F = E; E = ROTL(H, 19); H = G; G = P0(TT2);
-
-            // 第4轮
-            SS1 = ROTL((ROTL(B, 12) + F + ROTL(T(j + 3), j + 3)), 7);
-            SS2 = SS1 ^ ROTL(B, 12);
-            TT1 = FF0(B, C, D) + A + SS2 + (W[j + 3] ^ W[j + 7]);
-            TT2 = GG0(F, G, H) + E + SS1 + W[j + 3];
-            A = D; D = ROTL(C, 9); C = B; B = TT1;
-            E = H; H = ROTL(G, 19); G = F; F = P0(TT2);
+            // 更新寄存器（保持标准顺序）
+            D = C;
+            C = ROTL(B, 9);
+            B = A;
+            A = TT1;
+            H = G;
+            G = ROTL(F, 19);
+            F = E;
+            E = P0(TT2);
         }
 
-        state[0] ^= A; state[1] ^= B; state[2] ^= C; state[3] ^= D;
-        state[4] ^= E; state[5] ^= F; state[6] ^= G; state[7] ^= H;
+        // 更新状态
+        state[0] ^= A;
+        state[1] ^= B;
+        state[2] ^= C;
+        state[3] ^= D;
+        state[4] ^= E;
+        state[5] ^= F;
+        state[6] ^= G;
+        state[7] ^= H;
     }
 };
 
@@ -238,6 +255,7 @@ int main() {
     SM3Opt opt;
 
     // 测试空字符串
+    std::cout << "测试空字符串:\n";
     base.update(empty.data(), 0);
     base.finalize();
     auto base_digest = base.digest();
@@ -249,9 +267,18 @@ int main() {
     auto opt_digest = opt.digest();
     std::cout << "优化版 SM3(\"\") = ";
     print_hex(opt_digest);
+
+    // 比较结果
+    if (base_digest == opt_digest) {
+        std::cout << "结果匹配!\n";
+    }
+    else {
+        std::cout << "结果不匹配!\n";
+    }
     std::cout << std::endl;
 
     // 测试"abc"
+    std::cout << "测试\"abc\":\n";
     base.reset();
     base.update(abc.data(), abc.size());
     base.finalize();
@@ -265,10 +292,18 @@ int main() {
     opt_digest = opt.digest();
     std::cout << "优化版 SM3(\"abc\") = ";
     print_hex(opt_digest);
+
+    // 比较结果
+    if (base_digest == opt_digest) {
+        std::cout << "结果匹配!\n";
+    }
+    else {
+        std::cout << "结果不匹配!\n";
+    }
     std::cout << std::endl;
 
     // 性能测试
-    std::cout << "\n性能测试 (100KB数据, 1000次迭代):" << std::endl;
+    std::cout << "性能测试 (100KB数据, 1000次迭代):\n";
     test_performance("基础版", base, long_text);
     test_performance("优化版", opt, long_text);
 
