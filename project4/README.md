@@ -408,3 +408,210 @@ int main() {
 3.  可能绕过某些基于哈希的认证机制
 ## 四、实验结果
 如图project4-b 结果.png，验证通过，通过长度扩展攻击伪造合法的哈希值成功。
+
+# Project4-c 构建Merkle树
+## 一、实验背景
+基于 SM3 哈希算法和 RFC6962 标准构建 Merkle 树（以 10 万叶子节点为例）的实现，核心在于遵循 RFC6962 对节点哈希计算的规范，并结合 SM3 的 256 位哈希特性完成树的逐层构建。
+RFC6962 是证书透明度（Certificate Transparency）的标准，其中定义的 Merkle 树（又称 “Merkle 哈希树”）用于验证数据的存在性和完整性，核心规则包括：
+-   **节点类型区分**：通过前缀字节区分叶子节点和内部节点，避免哈希碰撞：
+    -    叶子节点：前缀为`0x00`（单字节`00`）；
+    -   内部节点：前缀为`0x01`（单字节`01`）。
+-   **树结构**：完全二叉树，若某层节点数为奇数，最后一个节点将被复制作为其右兄弟，确保上层节点数为整数。
+## 二、实验原理
+1.  **SM3实现**：
+    
+    -   完整实现SM3哈希算法
+        
+    -   符合国家标准GB/T 32905-2016
+        
+    -   支持任意长度输入数据
+        
+2.  **RFC6962兼容的Merkle树**：
+    
+    -   叶子节点使用前缀  `0x00`
+        
+    -   内部节点使用前缀  `0x01`
+        
+    -   处理奇数节点（最后一个节点与自己组合）
+        
+3.  **存在性证明**：
+    
+    -   生成从目标叶子到根节点的路径
+        
+    -   路径包含兄弟节点的哈希和位置信息
+        
+    -   支持验证证明的有效性
+        
+4.  **不存在性证明**：
+    
+    -   查找目标值的前驱（小于目标的最大叶子）
+        
+    -   查找目标值的后继（大于目标的最小叶子）
+        
+    -   提供前驱和后继的存在性证明
+        
+5.  **性能优化**：
+    
+    -   使用分层结构存储节点，加速证明生成
+        
+    -   支持10万叶子节点的大规模树
+        
+    -   避免递归导致栈溢出
+## 三、具体过程
+#### 1. SM3哈希函数实现
+```cpp
+// SM3核心函数
+uint32_t P0(uint32_t x) { /*...*/ }
+uint32_t P1(uint32_t x) { /*...*/ }
+
+std::string sm3_hash(const std::string& data) {
+    // 1. 初始化状态变量
+    uint32_t V[8] = { /*SM3_IV值*/ };
+    
+    // 2. 消息填充
+    //   - 添加位'1'
+    //   - 填充0
+    //   - 添加消息长度(64位大端表示)
+    
+    // 3. 处理每个512位块
+    for (size_t i = 0; i < blocks; i++) {
+        // 3.1 消息扩展
+        //   - 将块分为16个32位字
+        //   - 扩展到68个字(W)
+        //   - 计算W1数组
+        
+        // 3.2 压缩函数
+        //   - 8个工作变量(A-H)
+        //   - 64轮迭代
+        //   - 每轮更新工作变量
+    }
+    
+    // 4. 生成最终哈希值
+    //   - 拼接状态变量
+    return hash;
+}
+```
+#### 2. Merkle树实现
+```cpp
+class MerkleTree {
+private:
+    // 树结构
+    MerkleNode* root;
+    std::vector<MerkleNode*> leaves;
+    std::vector<std::vector<MerkleNode*>> levels;
+    
+    // RFC6962哈希封装
+    std::string rfc6962_hash_leaf(const std::string& data) {
+        return sm3_hash("\x00" + data);
+    }
+    
+    std::string rfc6962_hash_node(const std::string& left, const std::string& right) {
+        return sm3_hash("\x01" + left + right);
+    }
+    
+    // 构建树
+    void buildTree() {
+        // 分层构建
+        while (current_level.size() > 1) {
+            // 处理每对节点
+            for (每对节点) {
+                if (有右节点) {
+                    hash = hash_node(left, right);
+                } else {
+                    // 奇数节点：与自己组合
+                    hash = hash_node(left, left);
+                }
+            }
+            // 添加新层级
+            levels.push_back(next_level);
+        }
+    }
+    
+public:
+    // 存在性证明
+    std::vector<std::pair<std::string, bool>> getExistenceProof(size_t index) {
+        // 从叶子向上遍历
+        while (未到根节点) {
+            // 确定兄弟节点位置
+            bool is_right = (当前索引 % 2 == 1);
+            size_t sibling_index = 计算兄弟索引;
+            
+            // 处理边界情况
+            if (兄弟索引越界) {
+                sibling_index = 当前索引; // 与自己组合
+            }
+            
+            // 添加兄弟节点哈希和位置
+            proof.push_back(兄弟节点哈希, 位置);
+            
+            // 上移到父层
+            current_index /= 2;
+        }
+        return proof;
+    }
+    
+    // 不存在性证明
+    std::pair<证明, 证明> getNonExistenceProof(uint32_t target) {
+        // 1. 创建排序索引
+        std::vector<uint32_t> sorted_indices;
+        
+        // 2. 查找目标位置
+        auto it = std::lower_bound(sorted_indices.begin(), sorted_indices.end(), target);
+        
+        // 3. 获取前驱和后继索引
+        size_t pred_index = (it != begin) ? *(it-1) : 无效值;
+        size_t succ_index = (it != end) ? *it : 无效值;
+        
+        // 4. 生成存在性证明
+        auto pred_proof = getExistenceProof(pred_index);
+        auto succ_proof = getExistenceProof(succ_index);
+        
+        return {pred_proof, succ_proof};
+    }
+};
+```
+#### 3. 关键算法细节
+
+1.  **叶子节点处理**：
+```cpp
+// 叶子数据：8字节大端整数
+std::string leaf = int_to_bytes(i); 
+// 哈希计算：H(0x00 || data)
+std::string leaf_hash = sm3_hash("\x00" + leaf);
+```
+2. **内部节点处理**：
+```cpp
+// 正常节点：H(0x01 || left_hash || right_hash)
+hash = sm3_hash("\x01" + left + right);
+
+// 奇数节点：H(0x01 || left_hash || left_hash)
+hash = sm3_hash("\x01" + left + left);
+```
+3. **存在性证明验证**：
+```cpp
+bool verifyExistenceProof(...) {
+    // 初始化为叶子哈希
+    current = hash_leaf(leaf_data);
+    
+    for (每个证明步骤) {
+        if (兄弟在右侧) {
+            current = hash_node(current, sibling);
+        } else {
+            current = hash_node(sibling, current);
+        }
+    }
+    
+    return current == root_hash;
+}
+```
+4.  **不存在性证明验证**：
+    
+    -   验证前驱存在性证明有效
+        
+    -   验证后继存在性证明有效
+        
+    -   确认目标值在前驱和后继之间
+        
+    -   边界情况处理（目标小于所有值或大于所有值）
+## 四、实验结果
+实验结果如图project4-c 结果.png所示。
