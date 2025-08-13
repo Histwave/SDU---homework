@@ -19,3 +19,6 @@ RAM：16.0GB
 操作系统：Windows 11
 
 编译器：PyCharm Community Edition 2023.2.1  、 Visual Studio2022
+
+### 小组成员：
+李士博
